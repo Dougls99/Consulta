@@ -151,11 +151,16 @@ function aviso(texto) {
 async function api(acao, extra = {}) {
   if (URL_API.startsWith("COLE_AQUI")) throw new Error("Configure a constante URL_API no início do script desta página.");
   // text/plain evita a verificação prévia (CORS preflight) que o Apps Script não suporta
-  const r = await fetch(URL_API, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({ acao, senha, ...extra })
-  });
+  let r;
+  try {
+    r = await fetch(URL_API, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ acao, senha, ...extra })
+    });
+  } catch {
+    throw new Error("Não foi possível falar com o Apps Script. Rode a função “autorizar” no editor e crie uma nova versão da implantação.");
+  }
   if (!r.ok) throw new Error("Falha de conexão (HTTP " + r.status + ").");
   const dados = await r.json();
   if (!dados.ok) throw new Error(dados.erro || "Erro desconhecido.");

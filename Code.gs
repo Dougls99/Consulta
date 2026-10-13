@@ -8,6 +8,16 @@ const ID_PLANILHA = "13bnnwDdEty5VoVOMDRDXm5U8GoKaNJo6IjJoBiZVTVw";
 const GID = 0;                       // gid da aba (o número depois de "gid=" no link)
 const SENHA = "TROQUE-ESTA-SENHA";   // a mesma senha será digitada na página admin.html
 
+/**
+ * Rode esta função UMA VEZ no editor (menu "Executar") para conceder as permissões
+ * de acesso à planilha. Sem isso, a página admin.html dá "Failed to fetch".
+ */
+function autorizar() {
+  const nome = SpreadsheetApp.openById(ID_PLANILHA).getName();
+  LockService.getScriptLock();
+  Logger.log("Autorizado. Planilha: " + nome);
+}
+
 function doGet() {
   return resposta({ ok: true, mensagem: "API ativa." });
 }
