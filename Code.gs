@@ -18,27 +18,43 @@ function autorizar() {
   Logger.log("Autorizado. Planilha: " + nome);
 }
 
-function doGet() {
+function doGet(e) {
+  const p = (e && e.parameter) || {};
+
+  // Modo alternativo: a página envia o pedido pela URL
+  if (p.payload) return resposta(processar(p.payload));
+
+  // Diagnóstico: abra SUA_URL/exec?acao=teste no navegador
+  if (p.acao === "teste") {
+    try {
+      const nome = SpreadsheetApp.openById(ID_PLANILHA).getName();
+      return resposta({ ok: true, mensagem: "API ativa.", planilha: nome });
+    } catch (erro) {
+      return resposta({ ok: false, erro: String(erro.message || erro) });
+    }
+  }
   return resposta({ ok: true, mensagem: "API ativa." });
 }
 
 function doPost(e) {
-  let saida;
+  return resposta(processar(e.postData.contents));
+}
+
+function processar(texto) {
   try {
-    const req = JSON.parse(e.postData.contents);
+    const req = JSON.parse(texto);
     if (req.senha !== SENHA) throw new Error("Senha incorreta.");
 
     const trava = LockService.getScriptLock();
     trava.waitLock(20000); // evita duas edições simultâneas
     try {
-      saida = executar(req);
+      return executar(req);
     } finally {
       trava.releaseLock();
     }
   } catch (erro) {
-    saida = { ok: false, erro: String(erro.message || erro) };
+    return { ok: false, erro: String(erro.message || erro) };
   }
-  return resposta(saida);
 }
 
 function resposta(obj) {

@@ -151,15 +151,20 @@ function aviso(texto) {
 async function api(acao, extra = {}) {
   if (URL_API.startsWith("COLE_AQUI")) throw new Error("Configure a constante URL_API no início do script desta página.");
   // text/plain evita a verificação prévia (CORS preflight) que o Apps Script não suporta
+  const corpo = JSON.stringify({ acao, senha, ...extra });
   let r;
   try {
     r = await fetch(URL_API, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ acao, senha, ...extra })
+      body: corpo
     });
   } catch {
-    throw new Error("Não foi possível falar com o Apps Script. Rode a função “autorizar” no editor e crie uma nova versão da implantação.");
+    // Alternativa: enviar o pedido pela URL (GET), que o Google costuma aceitar
+    const url = URL_API + "?payload=" + encodeURIComponent(corpo);
+    if (url.length > 7000) throw new Error("Texto longo demais para o modo alternativo. Resolva a conexão com o Apps Script (veja ?acao=teste).");
+    try { r = await fetch(url); }
+    catch { throw new Error("Não foi possível falar com o Apps Script. Abra a URL_API seguida de ?acao=teste numa aba nova para diagnosticar."); }
   }
   if (!r.ok) throw new Error("Falha de conexão (HTTP " + r.status + ").");
   const dados = await r.json();
