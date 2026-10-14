@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Gerenciar scripts</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;800&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
@@ -82,10 +83,9 @@ dialog form{display:grid;gap:16px}
   <!-- Entrada com senha -->
   <section class="login" id="login">
     <h2>Acesso restrito</h2>
-    <p class="sub">Digite a senha definida no Apps Script.</p>
+    <p class="sub">Entre com sua conta Google. Só quem é editor da planilha consegue alterar os scripts.</p>
     <form id="formLogin">
-      <input class="field" id="senha" type="password" placeholder="Senha" aria-label="Senha" autocomplete="current-password" required>
-      <button class="btn" id="entrar" type="submit">Entrar</button>
+      <button class="btn" id="entrar" type="submit">Entrar com Google</button>
       <div class="msg err" id="msgLogin" role="alert"></div>
     </form>
   </section>
@@ -132,57 +132,102 @@ dialog form{display:grid;gap:16px}
 
 <script>
 // ===== CONFIGURAÇÃO =====
-// Cole aqui a URL do app da web gerada no Apps Script (termina em /exec)
-const URL_API = "https://script.google.com/macros/s/AKfycbyx768hSqH8UJk3dD5zXr__pcTaSXe-lbJXQatO5yHGwgNt-bAD8vRYsATQLOW1587Z/exec";
+// ID do cliente OAuth criado no Google Cloud (termina em .apps.googleusercontent.com)
+const CLIENT_ID = "850771851624-7vj86a0o4dp34m8kvb9i8vuautb0n5cc.apps.googleusercontent.com";
+const ID_PLANILHA = "13bnnwDdEty5VoVOMDRDXm5U8GoKaNJo6IjJoBiZVTVw";
+const GID = 0; // número depois de "gid=" no link da aba
 // ========================
 
 const $ = (id) => document.getElementById(id);
-let senha = "", itens = [], editando = null, excluindo = null;
+const API = "https://sheets.googleapis.com/v4/spreadsheets/" + ID_PLANILHA;
+let token = "", email = "", cliente = null, aba = null;
+let colA = 0, colS = 1, itens = [], editando = null, excluindo = null;
 
 const escapar = (s) => s.replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const normalizar = (s) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+const letra = (n) => { let s = ""; n++; while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); } return s; };
 
 function aviso(texto) {
   const t = $("toast"); t.textContent = texto; t.classList.add("on");
-  clearTimeout(aviso.id); aviso.id = setTimeout(() => t.classList.remove("on"), 2600);
+  clearTimeout(aviso.id); aviso.id = setTimeout(() => t.classList.remove("on"), 3200);
 }
 
-/* ---------- comunicação com a planilha ---------- */
-async function api(acao, extra = {}) {
-  if (URL_API.startsWith("COLE_AQUI")) throw new Error("Configure a constante URL_API no início do script desta página.");
-  // text/plain evita a verificação prévia (CORS preflight) que o Apps Script não suporta
-  const corpo = JSON.stringify({ acao, senha, ...extra });
-  let r;
-  try {
-    r = await fetch(URL_API, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: corpo
-    });
-  } catch {
-    // Alternativa: enviar o pedido pela URL (GET), que o Google costuma aceitar
-    const url = URL_API + "?payload=" + encodeURIComponent(corpo);
-    if (url.length > 7000) throw new Error("Texto longo demais para o modo alternativo. Resolva a conexão com o Apps Script (veja ?acao=teste).");
-    try { r = await fetch(url); }
-    catch { throw new Error("Não foi possível falar com o Apps Script. Abra a URL_API seguida de ?acao=teste numa aba nova para diagnosticar."); }
+/* ---------- Google Sheets API ---------- */
+const rngRaw = (a1) => `'${aba.title.replace(/'/g, "''")}'!${a1}`;
+const rng = (a1) => encodeURIComponent(rngRaw(a1));
+
+async function sheets(caminho, opcoes = {}) {
+  const r = await fetch(API + caminho, {
+    ...opcoes,
+    headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" }
+  });
+  if (r.status === 401) { sair(); throw new Error("Sessão expirada. Entre novamente."); }
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const msg = (d.error && d.error.message) || "Erro " + r.status;
+    if (r.status === 403 && !/not been used|disabled/i.test(msg)) throw new Error("Sua conta não tem permissão de editor nesta planilha.");
+    if (r.status === 404) throw new Error("Planilha não encontrada ou sem acesso para sua conta.");
+    throw new Error(msg);
   }
-  if (!r.ok) throw new Error("Falha de conexão (HTTP " + r.status + ").");
-  const dados = await r.json();
-  if (!dados.ok) throw new Error(dados.erro || "Erro desconhecido.");
-  return dados;
+  return d;
 }
 
 async function carregar() {
-  const { itens: lista } = await api("listar");
-  itens = lista;
+  if (!aba) {
+    const d = await sheets("?fields=sheets.properties(sheetId,title)");
+    aba = (d.sheets || []).map((s) => s.properties).find((p) => p.sheetId === GID);
+    if (!aba) throw new Error("Aba não encontrada (confira o GID).");
+  }
+  const v = (await sheets("/values/" + rng("A:ZZ"))).values || [];
+  const cab = (v[0] || []).map((x) => normalizar(String(x).trim()));
+  colA = cab.indexOf("assunto"); colS = cab.indexOf("script");
+  if (colA < 0 || colS < 0) throw new Error("A primeira linha deve conter as colunas “Assunto” e “Script”.");
+  itens = [];
+  v.slice(1).forEach((l, i) => {
+    const assunto = (l[colA] || "").trim(), script = (l[colS] || "").trim();
+    if (assunto || script) itens.push({ linha: i + 2, assunto, script });
+  });
   desenhar();
+}
+
+// Garante que a linha ainda é a mesma que a pessoa estava vendo
+async function conferir(item) {
+  const d = await sheets("/values/" + rng(`A${item.linha}:ZZ${item.linha}`));
+  const l = (d.values || [[]])[0] || [];
+  if ((l[colA] || "").trim() !== item.assunto || (l[colS] || "").trim() !== item.script)
+    throw new Error("Esta linha foi alterada por outra pessoa. Atualize a lista.");
+}
+
+async function adicionar(dados) {
+  const linha = new Array(Math.max(colA, colS) + 1).fill("");
+  linha[colA] = dados.assunto; linha[colS] = dados.script;
+  await sheets("/values/" + rng("A:ZZ") + ":append?valueInputOption=RAW&insertDataOption=INSERT_ROWS",
+    { method: "POST", body: JSON.stringify({ values: [linha] }) });
+}
+
+async function editar(item, dados) {
+  await conferir(item);
+  await sheets("/values:batchUpdate", { method: "POST", body: JSON.stringify({
+    valueInputOption: "RAW",
+    data: [
+      { range: rngRaw(`${letra(colA)}${item.linha}`), values: [[dados.assunto]] },
+      { range: rngRaw(`${letra(colS)}${item.linha}`), values: [[dados.script]] }
+    ]
+  }) });
+}
+
+async function excluir(item) {
+  await conferir(item);
+  await sheets(":batchUpdate", { method: "POST", body: JSON.stringify({ requests: [{
+    deleteDimension: { range: { sheetId: aba.sheetId, dimension: "ROWS", startIndex: item.linha - 1, endIndex: item.linha } }
+  }] }) });
 }
 
 /* ---------- lista ---------- */
 function desenhar() {
   const f = normalizar($("filtro").value.trim());
   const vis = itens.filter((i) => !f || normalizar(i.assunto + " " + i.script).includes(f));
-  $("contagem").textContent = `${vis.length} de ${itens.length} scripts`;
+  $("contagem").textContent = `${vis.length} de ${itens.length} scripts` + (email ? ` · ${email}` : "");
   $("lista").innerHTML = vis.length ? vis.map((i) => `
     <article class="item">
       <h2>${escapar(i.assunto)}</h2>
@@ -220,8 +265,7 @@ $("form").addEventListener("submit", async (e) => {
   const dados = { assunto: $("fAssunto").value.trim(), script: $("fScript").value.trim() };
   $("salvar").disabled = true; $("msgForm").textContent = "";
   try {
-    if (editando) await api("editar", { linha: editando.linha, original: { assunto: editando.assunto, script: editando.script }, dados });
-    else await api("adicionar", { dados });
+    if (editando) await editar(editando, dados); else await adicionar(dados);
     $("dlgForm").close();
     aviso(editando ? "Script atualizado." : "Script adicionado.");
     await carregar();
@@ -233,32 +277,48 @@ $("form").addEventListener("submit", async (e) => {
 $("naoExcluir").addEventListener("click", () => $("dlgExcluir").close());
 $("simExcluir").addEventListener("click", async () => {
   $("simExcluir").disabled = true;
-  try {
-    await api("excluir", { linha: excluindo.linha, original: { assunto: excluindo.assunto, script: excluindo.script } });
-    $("dlgExcluir").close(); aviso("Script excluído."); await carregar();
-  } catch (err) { $("dlgExcluir").close(); aviso(err.message); await carregar().catch(() => {}); }
+  try { await excluir(excluindo); $("dlgExcluir").close(); aviso("Script excluído."); await carregar(); }
+  catch (err) { $("dlgExcluir").close(); aviso(err.message); if (token) await carregar().catch(() => {}); }
   finally { $("simExcluir").disabled = false; }
 });
 
-/* ---------- login ---------- */
+/* ---------- login com Google ---------- */
 function mostrarPainel(sim) { $("login").hidden = sim; $("painel").hidden = !sim; }
 
-$("formLogin").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  senha = $("senha").value; $("entrar").disabled = true; $("msgLogin").textContent = "";
+function falhaLogin(texto) { $("msgLogin").textContent = texto; $("entrar").disabled = false; }
+
+async function aoReceberToken(resp) {
+  if (resp.error) return falhaLogin("Não foi possível entrar: " + resp.error);
+  token = resp.access_token;
   try {
+    const u = await (await fetch("https://www.googleapis.com/oauth2/v3/userinfo", { headers: { Authorization: "Bearer " + token } })).json();
+    email = u.email || "";
     await carregar();
-    try { sessionStorage.setItem("senhaAdmin", senha); } catch {}
     mostrarPainel(true);
-  } catch (err) { $("msgLogin").textContent = err.message; senha = ""; }
+  } catch (err) { token = ""; $("msgLogin").textContent = err.message; }
   finally { $("entrar").disabled = false; }
+}
+
+$("formLogin").addEventListener("submit", (e) => {
+  e.preventDefault();
+  $("msgLogin").textContent = "";
+  if (CLIENT_ID.startsWith("COLE_AQUI")) return falhaLogin("Configure a constante CLIENT_ID no início do script desta página.");
+  if (!window.google || !google.accounts) return falhaLogin("O login do Google ainda não carregou. Aguarde um instante ou desative bloqueadores de anúncio.");
+  $("entrar").disabled = true;
+  cliente = cliente || google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID,
+    scope: "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/userinfo.email",
+    callback: aoReceberToken,
+    error_callback: (er) => falhaLogin("Login cancelado ou bloqueado (" + (er.type || "erro") + ").")
+  });
+  cliente.requestAccessToken();
 });
 
-$("sair").addEventListener("click", () => {
-  senha = ""; itens = [];
-  try { sessionStorage.removeItem("senhaAdmin"); } catch {}
-  $("senha").value = ""; mostrarPainel(false);
-});
+function sair() {
+  if (token && window.google) try { google.accounts.oauth2.revoke(token); } catch {}
+  token = ""; email = ""; itens = []; mostrarPainel(false);
+}
+$("sair").addEventListener("click", sair);
 $("atualizar").addEventListener("click", () => carregar().then(() => aviso("Lista atualizada.")).catch((e) => aviso(e.message)));
 
 $("tema").addEventListener("click", () => {
@@ -266,12 +326,6 @@ $("tema").addEventListener("click", () => {
   const escuro = r.dataset.theme ? r.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
   r.dataset.theme = escuro ? "light" : "dark";
 });
-
-// Mantém a sessão aberta enquanto a aba estiver aberta
-try {
-  const salva = sessionStorage.getItem("senhaAdmin");
-  if (salva) { senha = salva; carregar().then(() => mostrarPainel(true)).catch(() => { senha = ""; }); }
-} catch {}
 </script>
 </body>
 </html>
